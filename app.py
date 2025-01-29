@@ -1,12 +1,11 @@
 import os
 import sqlite3
-from datetime import datetime
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, render_template_string
 from aiogram import Bot, types, Dispatcher
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher import FSMContext, filters
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
 app = Flask(__name__)
@@ -16,146 +15,159 @@ dp = Dispatcher(bot, storage=storage)
 
 # Конфигурация
 DOMAIN = "vipvdom.ru"
-ADMIN_ID = 850188889  # Замените на ваш Telegram ID
+ADMIN_ID = 850188889  # Замените на ваш ID
 CONTACTS = """Агентство 'Максимум'
 📞 Тел: +79676633355, +79676633377
 🌐 Сайт: https://maximum-an.ru"""
 
 # Инициализация БД
-conn = sqlite3.connect('ads.db', check_same_thread=False)
-c = conn.cursor()
+def init_db():
+    conn = sqlite3.connect('ads.db')
+    c = conn.cursor()
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS ads
+                (id INTEGER PRIMARY KEY,
+                title TEXT,
+                price TEXT,
+                description TEXT,
+                photos TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                (id INTEGER PRIMARY KEY,
+                telegram_id INTEGER UNIQUE,
+                role TEXT CHECK(role IN ('admin', 'agent', 'user')) DEFAULT 'user',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+    
+    conn.commit()
+    conn.close()
 
-c.execute('''CREATE TABLE IF NOT EXISTS ads
-             (id INTEGER PRIMARY KEY,
-             transaction_type TEXT,
-             property_type TEXT,
-             price INTEGER,
-             rooms INTEGER,
-             area REAL,
-             address TEXT,
-             description TEXT,
-             status TEXT DEFAULT 'draft',
-             created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+init_db()
 
-c.execute('''CREATE TABLE IF NOT EXISTS photos
-             (id INTEGER PRIMARY KEY,
-             ad_id INTEGER,
-             file_path TEXT,
-             FOREIGN KEY(ad_id) REFERENCES ads(id))''')
-
-c.execute('''CREATE TABLE IF NOT EXISTS users
-             (id INTEGER PRIMARY KEY,
-             telegram_id INTEGER UNIQUE,
-             role TEXT CHECK(role IN ('admin', 'agent', 'user')),
-             registered_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-conn.commit()
-
-# States
 class CreateAd(StatesGroup):
-    TRANSACTION_TYPE = State()
-    PROPERTY_TYPE = State()
+    TITLE = State()
     PRICE = State()
-    ROOMS = State()
-    AREA = State()
-    ADDRESS = State()
     DESCRIPTION = State()
     PHOTOS = State()
 
-class AuthStates(StatesGroup):
-    WAITING_PASSWORD = State()
-
-# ================= Telegram Handlers =================
+# Telegram Handlers
 @dp.message_handler(commands=['start'])
 async def send_welcome(message: types.Message):
-    user_id = message.from_user.id
-    
-    c.execute("SELECT role FROM users WHERE telegram_id=?", (user_id,))
-    user = c.fetchone()
-    
-    if user:
-        if user[0] == 'admin':
-            await admin_panel(message)
-        else:
-            await show_user_menu(message)
-    else:
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("🔑 Войти как сотрудник", callback_data="agent_login"))
-        await message.answer(
-            "Добро пожаловать в агентство 'Максимум'!\n\n"
-            "Выберите действие:",
-            reply_markup=keyboard
-        )
-
-@dp.callback_query_handler(lambda c: c.data == 'agent_login')
-async def request_password(callback_query: types.CallbackQuery):
-    await AuthStates.WAITING_PASSWORD.set()
-    await bot.send_message(
-        callback_query.from_user.id,
-        "Введите пароль сотрудника:",
-        reply_markup=types.ForceReply(selective=True)
+    web_app = WebAppInfo(url=f"https://{DOMAIN}/")
+    keyboard = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("📝 Создать объявление", web_app=web_app)
     )
-
-@dp.message_handler(state=AuthStates.WAITING_PASSWORD)
-async def check_password(message: types.Message, state: FSMContext):
-    if message.text == "Max2024!":
-        try:
-            c.execute("INSERT INTO users (telegram_id, role) VALUES (?, 'agent')", 
-                     (message.from_user.id,))
-            conn.commit()
-            await message.answer("✅ Вы успешно авторизованы как сотрудник!")
-            await show_agent_menu(message)
-        except sqlite3.IntegrityError:
-            await message.answer("⚠️ Вы уже зарегистрированы!")
-    else:
-        await message.answer("❌ Неверный пароль! Попробуйте еще раз.")
     
-    await state.finish()
-
-async def show_agent_menu(message: types.Message):
     await message.answer(
-        "Меню сотрудника:",
-        reply_markup=InlineKeyboardMarkup().add(
-            InlineKeyboardButton("➕ Новое объявление", callback_data="create_ad"),
-            InlineKeyboardButton("📊 Мои объявления", callback_data="my_ads")
-        )
+        "Добро пожаловать в агентство недвижимости!\n"
+        "Нажмите кнопку ниже чтобы создать объявление:",
+        reply_markup=keyboard
     )
 
-@dp.message_handler(commands=['admin'])
-async def admin_panel(message: types.Message):
-    c.execute("SELECT role FROM users WHERE telegram_id=?", (message.from_user.id,))
-    user = c.fetchone()
-    
-    if user and user[0] == 'admin':
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("➕ Новое объявление", callback_data="create_ad"))
-        await message.answer("🏠 Админ-панель:", reply_markup=keyboard)
-    else:
-        await message.answer("⛔ У вас нет доступа к этой команде!")
-
-# ... (остальные обработчики создания объявлений из предыдущего ответа)
-
-# ================= Web Routes =================
+# Web Routes
 @app.route('/')
 def index():
-    return render_template_string(INDEX_HTML.replace("{{CONTACTS}}", CONTACTS))
-
-@app.route('/ad/<int:ad_id>')
-def view_ad(ad_id):
-    c.execute("SELECT * FROM ads WHERE id=?", (ad_id,))
-    ad = c.fetchone()
+    conn = sqlite3.connect('ads.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM ads WHERE status='approved'")
+    ads = c.fetchall()
+    conn.close()
     
-    c.execute("SELECT file_path FROM photos WHERE ad_id=?", (ad_id,))
-    photos = [row[0] for row in c.fetchall()]
-    
-    return render_template_string(AD_HTML, 
-                               ad=ad,
-                               photos=photos,
-                               CONTACTS=CONTACTS,
-                               transaction_type='Продажа' if ad[1] == 'sell' else 'Аренда',
-                               property_type='Квартира' if ad[2] == 'flat' else 'Дом' if ad[2] == 'house' else 'Коммерческая',
-                               price=f"{ad[3]:,}".replace(",", " "))
+    return render_template_string(INDEX_HTML, ads=ads, CONTACTS=CONTACTS)
 
-# ... (остальные HTML-шаблоны из предыдущего ответа)
+INDEX_HTML = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Агентство "Максимум"</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+        .ad-form { background: #f5f5f5; padding: 20px; border-radius: 10px; }
+        input, textarea { width: 100%; padding: 10px; margin: 5px 0; border: 1px solid #ddd; }
+        button { background: #2ECC71; color: white; border: none; padding: 10px 20px; cursor: pointer; }
+        .ad-card { border: 2px solid #2ECC71; border-radius: 10px; padding: 15px; margin: 10px 0; }
+        .photos { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+        .photos img { width: 100%; height: 150px; object-fit: cover; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="ad-form">
+        <h2>Добавить объявление</h2>
+        <form id="adForm" onsubmit="return submitForm(event)">
+            <input type="text" name="title" placeholder="Заголовок" required>
+            <input type="text" name="price" placeholder="Цена" required>
+            <textarea name="description" placeholder="Описание"></textarea>
+            <input type="file" name="photos" multiple accept="image/*">
+            <button type="submit">Опубликовать</button>
+        </form>
+    </div>
+
+    <h3>Активные объявления:</h3>
+    <div id="adsList">
+        {% for ad in ads %}
+        <div class="ad-card">
+            <h3>{{ ad[1] }}</h3>
+            <p>Цена: {{ ad[2] }}</p>
+            <p>{{ ad[3] }}</p>
+            <div class="photos">
+                {% for photo in ad[4].split(',') %}
+                <img src="/static/photos/{{ photo }}" alt="Фото">
+                {% endfor %}
+            </div>
+            <pre>{{ CONTACTS }}</pre>
+        </div>
+        {% endfor %}
+    </div>
+
+    <script>
+        async function submitForm(e) {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            
+            const response = await fetch('/add_ad', {
+                method: 'POST',
+                body: formData
+            });
+            
+            if(response.ok) {
+                alert('Объявление отправлено на модерацию!');
+                location.reload();
+            }
+        }
+    </script>
+</body>
+</html>
+'''
+
+@app.route('/add_ad', methods=['POST'])
+def add_ad():
+    conn = sqlite3.connect('ads.db')
+    c = conn.cursor()
+    
+    photos = request.files.getlist('photos')
+    photo_names = []
+    
+    os.makedirs('static/photos', exist_ok=True)
+    
+    for photo in photos:
+        filename = f"{os.urandom(8).hex()}.jpg"
+        photo.save(os.path.join('static/photos', filename))
+        photo_names.append(filename)
+    
+    c.execute('''INSERT INTO ads (title, price, description, photos)
+                VALUES (?, ?, ?, ?)''',
+             (request.form['title'], 
+              request.form['price'],
+              request.form['description'],
+              ','.join(photo_names)))
+    
+    conn.commit()
+    conn.close()
+    
+    return '', 204
 
 if __name__ == '__main__':
     os.makedirs('static/photos', exist_ok=True)

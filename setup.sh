@@ -6,14 +6,15 @@ sudo apt update && sudo apt upgrade -y
 # Установка зависимостей
 sudo apt install -y python3.12 python3.12-venv nginx certbot python3-certbot-nginx tmux
 
-# Создание структуры папок
+# Настройка проекта
 mkdir -p ~/rent_bot/static/photos
-chmod -R 755 ~/rent_bot/static
-
-# Настройка виртуального окружения
 cd ~/rent_bot
+
+# Виртуальное окружение
 python3.12 -m venv venv
 source venv/bin/activate
+
+# Установка Python зависимостей
 pip install --upgrade pip
 pip install -r requirements.txt
 
@@ -21,10 +22,10 @@ pip install -r requirements.txt
 sudo cp nginx.conf /etc/nginx/sites-enabled/rent_bot.conf
 sudo nginx -t && sudo systemctl reload nginx
 
-# Получение SSL сертификата
+# Получение SSL
 sudo certbot --nginx -d vipvdom.ru --non-interactive --agree-tos -m admin@vipvdom.ru
 
-# Создание systemd сервиса
+# Systemd сервис
 sudo cp rent_bot.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable rent_bot

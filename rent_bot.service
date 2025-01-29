@@ -3,10 +3,10 @@ Description=Rent Bot Service
 After=network.target
 
 [Service]
-User=ubuntu
-WorkingDirectory=/home/ubuntu/rent_bot
-Environment="PATH=/home/ubuntu/rent_bot/venv/bin"
-ExecStart=/home/ubuntu/rent_bot/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 app:app
+User=root
+WorkingDirectory=/root/rent_bot
+Environment="PATH=/root/rent_bot/venv/bin"
+ExecStart=/root/rent_bot/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 app:app
 
 [Install]
 WantedBy=multi-user.target
